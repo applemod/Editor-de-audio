@@ -122,7 +122,6 @@
             </div>
         </main>
 
-        <!-- Modales -->
         <div id="echoModal" class="fixed inset-0 modal-bg hidden flex items-center justify-center z-50">
             <div class="bg-slate-800 w-full max-w-md p-6 rounded-2xl shadow-2xl border border-slate-600 relative">
                 <button onclick="closeModal('echoModal')" class="absolute top-4 right-4 text-slate-400 hover:text-white">
@@ -159,6 +158,20 @@
                 </button>
                 <h2 class="text-xl mb-2 font-medium">Reverberación</h2>
                 <div class="space-y-6">
+                    <div class="space-y-2">
+                        <div class="flex justify-between text-xs text-slate-400 uppercase">
+                            <span>Pre-retardo</span>
+                            <span id="preDelayVal">20ms</span>
+                        </div>
+                        <input type="range" id="reverbPreDelay" min="0" max="200" step="1" value="20" class="slider-custom w-full">
+                    </div>
+                    <div class="space-y-2">
+                        <div class="flex justify-between text-xs text-slate-400 uppercase">
+                            <span>Tamaño de habitación</span>
+                            <span id="roomSizeVal">50%</span>
+                        </div>
+                        <input type="range" id="reverbRoomSize" min="0" max="1" step="0.01" value="0.5" class="slider-custom w-full">
+                    </div>
                     <div class="space-y-2">
                         <div class="flex justify-between text-xs text-slate-400 uppercase">
                             <span>Decaimiento</span>
@@ -423,29 +436,33 @@
             delay.connect(wetGain); wetGain.connect(dest);
         }
 
-        function buildAlgorithmicChain(context, source, dest, decay, mix) {
+        function buildAlgorithmicChain(context, source, dest, decay, mix, roomSize, preDelay) {
             const dryGain = context.createGain();
             const wetGain = context.createGain();
             const outputLimiter = context.createGain();
+            const preDelayNode = context.createDelay(0.2);
+            preDelayNode.delayTime.value = preDelay / 1000;
             
             dryGain.gain.value = 1.0 - mix;
             wetGain.gain.value = mix;
             outputLimiter.gain.value = 0.35; 
 
-            const combTimes = [0.0151, 0.0183, 0.0211, 0.0237, 0.0271, 0.0293];
+            const scale = 0.05 + (roomSize * 2.0); 
+            const baseTimes = [0.0151, 0.0183, 0.0211, 0.0237, 0.0271, 0.0293];
             const combMerger = context.createGain();
-            combMerger.gain.value = 1 / combTimes.length;
+            combMerger.gain.value = 1 / baseTimes.length;
 
-            combTimes.forEach((t, idx) => {
+            source.connect(preDelayNode);
+            baseTimes.forEach((t, idx) => {
                 const delay = context.createDelay();
-                delay.delayTime.value = t;
+                delay.delayTime.value = t * scale;
                 const feedback = context.createGain();
-                feedback.gain.value = Math.pow(10, -3 * t / decay);
+                feedback.gain.value = Math.pow(10, -3 * t * scale / decay);
                 const filter = context.createBiquadFilter();
                 filter.type = "lowpass";
                 filter.frequency.value = 12000 - (idx * 1500);
                 
-                source.connect(filter);
+                preDelayNode.connect(filter);
                 filter.connect(delay);
                 delay.connect(feedback);
                 feedback.connect(delay);
@@ -477,15 +494,10 @@
                 selectionBuffer.copyToChannel(audioBuffer.getChannelData(i).slice(start, end), i);
             }
 
-            // Calculamos tailSeconds dinámicamente según el efecto
             let tailSeconds = 0;
-            if (type === 'echo') {
-                tailSeconds = parseFloat(document.getElementById('echoDelay').value) * 5;
-            } else if (type === 'reverb') {
-                tailSeconds = parseFloat(document.getElementById('reverbDecay').value);
-            } else if (type === 'convolution' && irBuffer) {
-                tailSeconds = irBuffer.duration;
-            }
+            if (type === 'echo') tailSeconds = 5;
+            if (type === 'reverb') tailSeconds = parseFloat(document.getElementById('reverbDecay').value);
+            if (type === 'convolution') tailSeconds = irBuffer ? irBuffer.duration : 5;
 
             const offline = new OfflineAudioContext(audioBuffer.numberOfChannels, length + (audioBuffer.sampleRate * tailSeconds), audioBuffer.sampleRate);
             const source = offline.createBufferSource();
@@ -495,7 +507,7 @@
                 buildEchoChain(offline, source, offline.destination, parseFloat(document.getElementById('echoDelay').value), parseFloat(document.getElementById('echoMix').value));
                 closeModal('echoModal');
             } else if (type === 'reverb') {
-                buildAlgorithmicChain(offline, source, offline.destination, parseFloat(document.getElementById('reverbDecay').value), parseFloat(document.getElementById('reverbSimpleMix').value));
+                buildAlgorithmicChain(offline, source, offline.destination, parseFloat(document.getElementById('reverbDecay').value), parseFloat(document.getElementById('reverbSimpleMix').value), parseFloat(document.getElementById('reverbRoomSize').value), parseFloat(document.getElementById('reverbPreDelay').value));
                 closeModal('reverbSimpleModal');
             } else if (type === 'convolution') {
                 const mix = parseFloat(document.getElementById('reverbMix').value);
@@ -529,6 +541,7 @@
             audioBuffer = finalBuffer;
             saveState(); 
             resetEditorState();
+            showStatus("Efecto Aplicado Con Éxito");
         }
 
         async function previewEcho() {
@@ -545,7 +558,7 @@
             const { start, end } = getSelectionSamples();
             previewNode = audioCtx.createBufferSource();
             previewNode.buffer = audioBuffer;
-            buildAlgorithmicChain(audioCtx, previewNode, audioCtx.destination, parseFloat(document.getElementById('reverbDecay').value), parseFloat(document.getElementById('reverbSimpleMix').value));
+            buildAlgorithmicChain(audioCtx, previewNode, audioCtx.destination, parseFloat(document.getElementById('reverbDecay').value), parseFloat(document.getElementById('reverbSimpleMix').value), parseFloat(document.getElementById('reverbRoomSize').value), parseFloat(document.getElementById('reverbPreDelay').value));
             previewNode.start(0, start / audioBuffer.sampleRate, (end - start) / audioBuffer.sampleRate);
         }
 
@@ -723,6 +736,8 @@
 
         document.getElementById('reverbDecay').oninput = (e) => document.getElementById('decayVal').innerText = e.target.value + "s";
         document.getElementById('reverbSimpleMix').oninput = (e) => document.getElementById('mixVal').innerText = Math.round(e.target.value * 100) + "%";
+        document.getElementById('reverbRoomSize').oninput = (e) => document.getElementById('roomSizeVal').innerText = Math.round(e.target.value * 100) + "%";
+        document.getElementById('reverbPreDelay').oninput = (e) => document.getElementById('preDelayVal').innerText = e.target.value + "ms";
         document.getElementById('echoDelay').oninput = (e) => document.getElementById('delayVal').innerText = e.target.value + "s";
         document.getElementById('echoMix').oninput = (e) => document.getElementById('echoMixVal').innerText = Math.round(e.target.value * 100) + "%";
         
